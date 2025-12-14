@@ -113,18 +113,15 @@ def buscar_feed(chave, url_rss):
     else:
         return None
 
-# --- RENDERIZAÇÃO DO CARD ---
 def render_card(chave, nome, url, cor, icone):
     dados = buscar_feed(chave, url)
     
     if not dados:
-        # Caso nunca tenha carregado nada
         st.markdown(f"""
-        <div style="background:#f0f2f6; padding:15px; border-radius:10px; border-left:5px solid #ccc; margin-bottom:15px; opacity:0.6;">
-            <strong style="color:#555">{icone} {nome}</strong><br>
-            <span style="font-size:12px; color:#777">Aguardando primeira conexão...</span>
-        </div>
-        """, unsafe_allow_html=True)
+<div style="background:#f0f2f6; padding:15px; border-radius:10px; border-left:5px solid #ccc; margin-bottom:15px; opacity:0.6;">
+<strong style="color:#555">{icone} {nome}</strong><br>
+<span style="font-size:12px; color:#777">Aguardando primeira conexão...</span>
+</div>""", unsafe_allow_html=True)
         return
 
     # Monta as Tags
@@ -132,34 +129,30 @@ def render_card(chave, nome, url, cor, icone):
     if dados['local']:
         html_tags += f"<span style='background:#e3f2fd; color:#1565c0; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:800; margin-left:5px;'>📍 {dados['local']}</span>"
 
-    # HTML Seguro (Sem f-strings complexas que quebram o layout)
+    # HTML COLADO NA ESQUERDA (Para evitar que vire código)
     card_html = f"""
-    <div style="background:white; padding:15px; border-radius:12px; box-shadow:0 3px 10px rgba(0,0,0,0.08); margin-bottom:15px; border-left:5px solid {cor}; border-top:1px solid #eee; border-right:1px solid #eee; border-bottom:1px solid #eee;">
-        
-        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
-            <div>
-                <span style="font-weight:900; color:{cor}; font-size:12px; text-transform:uppercase; letter-spacing:0.5px;">{icone} {nome}</span>
-                {html_tags}
-            </div>
-            <div style="text-align:right;">
-                <div style="font-size:11px; font-weight:bold; color:#555;">{dados['hora']}</div>
-                <div style="font-size:9px; color:#999;">{dados['status']}</div>
-            </div>
-        </div>
-
-        <div style="font-size:15px; font-weight:800; color:#222; margin-bottom:8px; line-height:1.4;">
-            {dados['titulo']}
-        </div>
-
-        <div style="font-size:13px; color:#555; margin-bottom:12px; line-height:1.4; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;">
-            {dados['resumo'][:180]}...
-        </div>
-
-        <div style="text-align:right;">
-            <a href="{dados['link']}" target="_blank" style="display:inline-block; text-decoration:none; color:#333; font-weight:800; font-size:11px; background:#f0f2f6; padding:8px 14px; border-radius:6px; transition:0.2s;">LER MATÉRIA ➜</a>
-        </div>
+<div style="background:white; padding:15px; border-radius:12px; box-shadow:0 3px 10px rgba(0,0,0,0.08); margin-bottom:15px; border-left:5px solid {cor}; border-top:1px solid #eee; border-right:1px solid #eee; border-bottom:1px solid #eee;">
+<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+    <div>
+        <span style="font-weight:900; color:{cor}; font-size:12px; text-transform:uppercase; letter-spacing:0.5px;">{icone} {nome}</span>
+        {html_tags}
     </div>
-    """
+    <div style="text-align:right;">
+        <div style="font-size:11px; font-weight:bold; color:#555;">{dados['hora']}</div>
+        <div style="font-size:9px; color:#999;">{dados['status']}</div>
+    </div>
+</div>
+<div style="font-size:15px; font-weight:800; color:#222; margin-bottom:8px; line-height:1.4;">
+    {dados['titulo']}
+</div>
+<div style="font-size:13px; color:#555; margin-bottom:12px; line-height:1.4; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;">
+    {dados['resumo'][:180]}...
+</div>
+<div style="text-align:right;">
+    <a href="{dados['link']}" target="_blank" style="display:inline-block; text-decoration:none; color:#333; font-weight:800; font-size:11px; background:#f0f2f6; padding:8px 14px; border-radius:6px; transition:0.2s;">LER MATÉRIA ➜</a>
+</div>
+</div>
+"""
     
     st.markdown(card_html, unsafe_allow_html=True)
 
@@ -203,3 +196,4 @@ with col6:
 
 with col7:
     render_card("cbm", "BOMBEIROS", "https://www.cbm.df.gov.br/feed/", "#f39c12", "🔥")
+
