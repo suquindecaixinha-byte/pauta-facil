@@ -1,6 +1,8 @@
 import streamlit as st
 import feedparser
+import requests
 import re
+import urllib3
 from datetime import datetime
 import pytz
 
@@ -12,17 +14,36 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Cache para não recarregar o RSS toda hora (performance)
+# Desabilitar avisos de segurança (Necessário para PCDF)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# HEADERS (Disfarce de Navegador)
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Referer': 'https://www.google.com/'
+}
+
+# --- FUNÇÃO DE CARREGAMENTO BLINDADA ---
 @st.cache_data(ttl=300) # Atualiza a cada 5 min
 def carregar_rss(url):
-    return feedparser.parse(url)
+    try:
+        # O Requests baixa o conteúdo "na força bruta", ignorando SSL e bloqueios
+        resp = requests.get(url, headers=HEADERS, verify=False, timeout=15)
+        if resp.status_code == 200:
+            # O feedparser apenas lê o que o requests baixou
+            return feedparser.parse(resp.content)
+    except:
+        pass
+    # Retorna vazio se der erro
+    return feedparser.FeedParserDict(entries=[])
 
 # --- UTILITÁRIOS ---
 def hora_atual():
     return datetime.now(pytz.timezone('America/Sao_Paulo')).strftime('%H:%M')
 
 def limpar_html(texto):
-    """Remove tags HTML do resumo do RSS para ficar limpo"""
+    """Remove tags HTML do resumo"""
     clean = re.compile('<.*?>')
     return re.sub(clean, '', texto)
 
@@ -39,71 +60,69 @@ def detectar_local(texto):
 def processar_feed(nome_fonte, url_rss, cor_borda, icone):
     feed = carregar_rss(url_rss)
     
-    # Se o feed estiver vazio ou der erro (Bozo no bloqueio)
+    # Se estiver vazio
     if not feed.entries:
         st.markdown(f"""
-        <div style="background:#eee; padding:15px; border-radius:10px; border-left:5px solid {cor_borda}; opacity:0.6; margin-bottom:15px;">
+        <div style="background:white; padding:15px; border-radius:10px; border-left:5px solid #ccc; opacity:0.7; margin-bottom:15px; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
             <strong>{icone} {nome_fonte}</strong><br>
-            <span style="font-size:12px">Sem conexão ou bloqueado.</span>
+            <span style="font-size:12px; color:#666">Sem novidades ou conexão instável.</span>
         </div>
         """, unsafe_allow_html=True)
         return
 
-    # Pega a notícia mais recente (a primeira da lista)
+    # Pega a notícia mais recente
     post = feed.entries[0]
     titulo = post.title
     link = post.link
     
-    # Tenta pegar o resumo (description ou summary)
+    # Tenta pegar resumo
     resumo = ""
     if 'summary' in post: resumo = post.summary
     elif 'description' in post: resumo = post.description
     
-    # Limpeza
-    resumo_limpo = limpar_html(resumo)[:150] + "..." # Pega só os primeiros caracteres
+    resumo_limpo = limpar_html(resumo)[:160] # Limita caracteres
+    if len(resumo_limpo) > 150: resumo_limpo += "..."
+    
     local = detectar_local(titulo + " " + resumo_limpo)
     
-    # Monta o HTML
     tags_html = ""
     if local: tags_html = f"<span style='background:#e3f2fd; color:#1565c0; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:bold;'>📍 {local}</span>"
     
     st.markdown(f"""
-    <div style="background:white; padding:15px; border-radius:10px; box-shadow:0 2px 5px rgba(0,0,0,0.1); margin-bottom:15px; border-left:5px solid {cor_borda}; transition: transform 0.2s;">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span style="font-weight:bold; color:{cor_borda}; font-size:12px; text-transform:uppercase;">{icone} {nome_fonte}</span>
+    <div style="background:white; padding:15px; border-radius:10px; box-shadow:0 4px 10px rgba(0,0,0,0.08); margin-bottom:15px; border-left:5px solid {cor_borda}; transition: transform 0.2s;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span style="font-weight:bold; color:{cor_borda}; font-size:12px; text-transform:uppercase; font-family:sans-serif;">{icone} {nome_fonte}</span>
             {tags_html}
         </div>
-        <div style="font-size:15px; font-weight:bold; margin:10px 0; line-height:1.4; color:#333;">{titulo}</div>
-        <div style="font-size:12px; color:#666; margin-bottom:10px;">{resumo_limpo}</div>
+        <div style="font-size:15px; font-weight:700; margin-bottom:8px; line-height:1.3; color:#222; font-family:sans-serif;">{titulo}</div>
+        <div style="font-size:12px; color:#555; margin-bottom:12px; line-height:1.4; font-family:sans-serif;">{resumo_limpo}</div>
         <div style="text-align:right;">
-            <a href="{link}" target="_blank" style="text-decoration:none; color:#007bff; font-weight:bold; font-size:11px;">LER MATÉRIA ➜</a>
+            <a href="{link}" target="_blank" style="text-decoration:none; color:#333; font-weight:800; font-size:11px; background:#f5f5f5; padding:6px 12px; border-radius:4px;">LER MATÉRIA ➜</a>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("📡 Pauta Fácil RSS")
-    st.markdown("Monitoramento via Feeds")
-    if st.button("🔄 ATUALIZAR", type="primary"): 
+    st.title("📡 Pauta Fácil")
+    st.caption("Monitoramento RSS Híbrido")
+    if st.button("🔄 ATUALIZAR AGORA", type="primary", use_container_width=True): 
         st.cache_data.clear()
         st.rerun()
-    st.info(f"Brasília: {hora_atual()}")
+    st.write("---")
+    st.markdown(f"**Brasília: {hora_atual()}**")
 
 # --- LAYOUT PRINCIPAL ---
 st.markdown("### 🚨 Plantão Policial")
 c1, c2, c3 = st.columns(3)
 
 with c1:
-    # PCDF (Joomla RSS)
     processar_feed("PCDF", "https://www.pcdf.df.gov.br/noticias?format=feed&type=rss", "#000", "🕵️‍♂️")
-
 with c2:
-    # Metrópoles DF (WordPress RSS) - Usamos no lugar da PMDF que não tem RSS bom
+    # Metrópoles DF (Cobre PMDF/Bombeiros)
     processar_feed("METRÓPOLES", "https://www.metropoles.com/distrito-federal/feed", "#007bff", "📱")
-
 with c3:
-    # PCGO (WordPress RSS)
+    # Jornal Opção (Entorno) ou PCGO
     processar_feed("PCGO", "https://policiacivil.go.gov.br/feed", "#1565c0", "🔫")
 
 st.markdown("---")
@@ -111,17 +130,10 @@ st.markdown("### 🏛️ Poder & Serviços")
 c4, c5, c6, c7 = st.columns(4)
 
 with c4:
-    # Agência Brasília (RSS)
     processar_feed("GDF", "https://www.agenciabrasilia.df.gov.br/feed/", "#009688", "📢")
-
 with c5:
-    # MPDFT (RSS)
     processar_feed("MPDFT", "https://www.mpdft.mp.br/portal/index.php/comunicacao-menu/noticias?format=feed&type=rss", "#b71c1c", "⚖️")
-
 with c6:
-    # Senado/Câmara (Exemplo - CLDF não tem RSS fácil, usando Senado como teste)
     processar_feed("SENADO", "https://www12.senado.leg.br/noticias/feed/metadados/agencia", "#673ab7", "🏛️")
-
 with c7:
-    # Bombeiros (CBMDF - WordPress RSS)
     processar_feed("BOMBEIROS", "https://www.cbm.df.gov.br/feed/", "#fbc02d", "🔥")
