@@ -5,7 +5,7 @@ import urllib3
 import re
 from datetime import datetime
 
-# --- CONFIGURAÇÃO DA PÁGINA (WIDE E ÍCONE) ---
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="Radar News DF",
     layout="wide",
@@ -17,14 +17,12 @@ st.set_page_config(
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36'}
 
-# --- ESTILOS CSS PROFISSIONAIS ---
+# --- ESTILOS CSS ---
 st.markdown("""
     <style>
-    /* Fundo geral e fontes */
     .main { background-color: #f8f9fa; }
     h1, h2, h3 { font-family: 'Segoe UI', sans-serif; }
     
-    /* Card de Notícia */
     .news-card {
         background-color: white;
         border-radius: 12px;
@@ -40,7 +38,6 @@ st.markdown("""
         box-shadow: 0 8px 15px rgba(0,0,0,0.1);
     }
     
-    /* Cabeçalho do Card (Colorido) */
     .card-header {
         padding: 10px 15px;
         font-size: 12px;
@@ -52,7 +49,6 @@ st.markdown("""
         align-items: center;
     }
     
-    /* Corpo do Card */
     .card-body { padding: 15px; }
     .news-title {
         font-size: 16px;
@@ -60,10 +56,9 @@ st.markdown("""
         color: #2c3e50;
         line-height: 1.4;
         margin-bottom: 12px;
-        min-height: 45px; /* Alinha altura */
+        min-height: 45px;
     }
     
-    /* Tags */
     .tags-container { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
     .tag {
         font-size: 10px;
@@ -77,7 +72,6 @@ st.markdown("""
     .tag-video { background-color: #fce4ec; color: #c2185b; border: 1px solid #f8bbd0; }
     .tag-foto { background-color: #f3e5f5; color: #7b1fa2; border: 1px solid #e1bee7; }
     
-    /* Botão Link */
     .card-footer {
         padding: 10px 15px;
         background-color: #f8f9fa;
@@ -96,7 +90,6 @@ st.markdown("""
     }
     .read-btn:hover { color: #007bff; }
     
-    /* Ajustes Dark Mode (Streamlit nativo cuida do resto, mas ajustamos cards) */
     @media (prefers-color-scheme: dark) {
         .news-card { background-color: #262730; border-color: #333; }
         .card-footer { background-color: #1e1e1e; border-color: #333; }
@@ -106,7 +99,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- LOCAIS E FUNÇÕES (MANTIDOS DA VERSÃO ANTERIOR) ---
+# --- LOCAIS E FUNÇÕES ---
 LOCAIS_ALVO = [
     "Ceilândia", "Taguatinga", "Samambaia", "Gama", "Santa Maria", "Planaltina", "Recanto das Emas",
     "São Sebastião", "Brazlândia", "Sol Nascente", "Pôr do Sol", "Paranoá", "Núcleo Bandeirante",
@@ -157,11 +150,41 @@ def buscar_generico(url, seletor_tag, seletor_classe=None, regex_link=None):
     except: pass
     return None, None, None, None, None
 
-# --- DEFINIÇÕES DE FONTES ---
-# (Mesmas funções de antes, simplificadas aqui para economizar espaço visual no código)
+# --- FUNÇÕES ESPECÍFICAS AJUSTADAS ---
+
+def pmdf_v2():
+    """
+    Função BLINDADA contra 'Leia Mais'.
+    Ela pega todos os links e escolhe o melhor candidato a título.
+    """
+    try:
+        url = "https://portal.pm.df.gov.br/ocorrencias/"
+        r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.content, 'html.parser')
+            # Pega todos os H3, H2 e H4
+            headers = soup.find_all(['h3', 'h2', 'h4'])
+            
+            for h in headers:
+                link = h.find('a')
+                if link:
+                    texto = link.get_text().strip()
+                    url_final = link['href']
+                    
+                    # FILTRO DE QUALIDADE:
+                    # Ignora se for "leia mais", "saiba mais" ou muito curto
+                    if len(texto) < 15 or "leia mais" in texto.lower() or "read more" in texto.lower():
+                        continue
+                        
+                    # Se passou no filtro, é a notícia real
+                    if not url_final.startswith('http'): url_final = "https://portal.pm.df.gov.br" + url_final
+                    local, foto, video = investigar_detalhes(url_final)
+                    return texto, url_final, local, foto, video
+    except: pass
+    return None, None, None, None, None
+
+# Definições curtas
 def pcdf(): return buscar_generico("https://www.pcdf.df.gov.br/noticias", "a", regex_link=r'/noticias/\d+')
-def pmdf(): return buscar_generico("https://portal.pm.df.gov.br/ocorrencias/", "h3") 
-def cbmdf(): return buscar_generico("https://www.cbm.df.gov.br/category/noticias/", "h2", "entry-title")
 def pcgo(): return buscar_generico("https://policiacivil.go.gov.br/noticias", "h2", "entry-title")
 def metropoles(): return buscar_generico("https://www.metropoles.com/distrito-federal", "h3")
 def agencia(): return buscar_generico("https://www.agenciabrasilia.df.gov.br/", "h3")
@@ -182,15 +205,14 @@ with st.sidebar:
         
     st.write("---")
     st.caption("Fontes Monitoradas:")
-    st.markdown("- 🚓 Polícias (Civil/Militar)\n- 🔥 Bombeiros\n- 🏛️ GDF/Justiça\n- 📰 Imprensa Local")
+    st.markdown("- 🚓 Polícias (Civil/Militar)\n- 🏛️ GDF/Justiça\n- 📰 Imprensa Local")
     st.write("---")
-    st.caption(f"Versão 7.0 | {datetime.now().strftime('%d/%m/%Y')}")
+    st.caption(f"Versão 8.0 (Fix PMDF) | {datetime.now().strftime('%d/%m/%Y')}")
 
 # --- DASHBOARD PRINCIPAL ---
 
-# Métricas de Topo
 col_m1, col_m2, col_m3 = st.columns(3)
-col_m1.metric("Fontes Ativas", "9 Portais", delta="Online")
+col_m1.metric("Fontes Ativas", "8 Portais", delta="CBMDF Removido")
 col_m2.metric("Regiões Alvo", f"{len(LOCAIS_ALVO)} Locais", delta="DF + Entorno")
 col_m3.metric("Última Varredura", datetime.now().strftime('%H:%M:%S'), delta_color="off")
 
@@ -201,25 +223,22 @@ def render_card(titulo_fonte, cor_fundo, icone, dados):
     titulo, link, local, foto, video = dados
     
     if not titulo:
-        # Card vazio/erro
         st.markdown(f"""
         <div class="news-card" style="opacity: 0.6;">
             <div class="card-header" style="background-color: #ccc;">{titulo_fonte} <span style="font-size:10px">OFFLINE/SEM DADOS</span></div>
             <div class="card-body">
-                <div class="news-title" style="color:#999; font-style:italic; font-size:14px;">Nenhuma novidade recente detectada na varredura.</div>
+                <div class="news-title" style="color:#999; font-style:italic; font-size:14px;">Sem novidades ou erro de leitura.</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
         return
 
-    # Tags HTML
     tags_html = '<div class="tags-container">'
     if local: tags_html += f'<span class="tag tag-local">📍 {local}</span>'
     if video: tags_html += '<span class="tag tag-video">🎥 VÍDEO</span>'
     if foto: tags_html += '<span class="tag tag-foto">📸 FOTOS</span>'
     tags_html += '</div>'
 
-    # Renderiza Card Completo
     st.markdown(f"""
     <div class="news-card">
         <div class="card-header" style="background: {cor_fundo};">
@@ -240,11 +259,10 @@ def render_card(titulo_fonte, cor_fundo, icone, dados):
 tab_policia, tab_poder, tab_concorrencia = st.tabs(["🚨 PLANTÃO POLICIAL", "🏛️ PODER & SERVIÇOS", "📰 DESTAQUES PORTAIS"])
 
 with tab_policia:
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3) # Agora são 3 colunas (sem bombeiros)
     with c1: render_card("PCDF", "linear-gradient(45deg, #000000, #434343)", "🕵️‍♂️", pcdf())
-    with c2: render_card("PMDF", "linear-gradient(45deg, #d32f2f, #b71c1c)", "🚓", pmdf())
-    with c3: render_card("BOMBEIROS", "linear-gradient(45deg, #fbc02d, #f57f17)", "🔥", cbmdf())
-    with c4: render_card("PCGO (Entorno)", "linear-gradient(45deg, #1565c0, #0d47a1)", "🔫", pcgo())
+    with c2: render_card("PMDF", "linear-gradient(45deg, #d32f2f, #b71c1c)", "🚓", pmdf_v2())
+    with c3: render_card("PCGO (Entorno)", "linear-gradient(45deg, #1565c0, #0d47a1)", "🔫", pcgo())
 
 with tab_poder:
     c1, c2, c3, c4 = st.columns(4)
@@ -253,12 +271,9 @@ with tab_poder:
     with c3: render_card("TJDFT", "#607d8b", "🔨", tjdft())
     with c4: render_card("CÂMARA (CLDF)", "#673ab7", "🏛️", cldf())
 
-with tab_poder: # Adicionando espaço ou reorganizando se quiser
-    pass
-
 with tab_concorrencia:
     col_main, col_spacer = st.columns([1, 2])
     with col_main:
         render_card("METRÓPOLES DF", "linear-gradient(45deg, #0288d1, #26c6da)", "📱", metropoles())
     with col_spacer:
-        st.info("💡 Dica: O Metrópoles costuma atualizar muito rápido. Se aparecer aqui, confirme na PCDF/PMDF antes de rodar.")
+        st.info("💡 Monitorando editoria 'Distrito Federal'.")
