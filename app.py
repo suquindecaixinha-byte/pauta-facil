@@ -6,6 +6,7 @@ import html
 import urllib3
 from datetime import datetime, timedelta
 import time
+import concurrent.futures
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -15,16 +16,36 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Ignora erro de SSL (Cadeado de segurança)
+# Ignora erro de SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- MEMÓRIA PERMANENTE ---
+# --- AUTO-REFRESH (5 Minutos) ---
+from streamlit.runtime.scriptrunner import RerunData, RerunException
+def auto_atualizar(segundos=300):
+    if 'ultimo_update' not in st.session_state:
+        st.session_state.ultimo_update = time.time()
+    if time.time() - st.session_state.ultimo_update > segundos:
+        st.session_state.ultimo_update = time.time()
+        st.rerun()
+auto_atualizar(300)
+
+# --- MEMÓRIA ---
 if 'cache_noticias' not in st.session_state:
     st.session_state.cache_noticias = {}
 
+# --- LISTA DE FONTES (CONFIGURAÇÃO) ---
+FONTES = {
+    "pcdf": {"nome": "PCDF", "url": "https://www.pcdf.df.gov.br/noticias?format=feed&type=rss", "cor": "#2c3e50", "icone": "🕵️‍♂️"},
+    "metro": {"nome": "METRÓPOLES", "url": "https://www.metropoles.com/distrito-federal/feed", "cor": "#007bff", "icone": "📱"},
+    "pcgo": {"nome": "PCGO", "url": "https://policiacivil.go.gov.br/feed", "cor": "#c0392b", "icone": "🔫"},
+    "gdf": {"nome": "GDF", "url": "https://www.agenciabrasilia.df.gov.br/feed/", "cor": "#009688", "icone": "📢"},
+    "mp": {"nome": "MPDFT", "url": "https://www.mpdft.mp.br/portal/index.php/comunicacao-menu/noticias?format=feed&type=rss", "cor": "#b71c1c", "icone": "⚖️"},
+    "senado": {"nome": "SENADO", "url": "https://www12.senado.leg.br/noticias/feed/metadados/agencia", "cor": "#673ab7", "icone": "🏛️"},
+    "cbm": {"nome": "BOMBEIROS", "url": "https://www.cbm.df.gov.br/feed/", "cor": "#f39c12", "icone": "🔥"}
+}
+
 # --- FUNÇÕES ÚTEIS ---
 def hora_brasilia():
-    # Pega hora atual UTC-3
     return (datetime.utcnow() - timedelta(hours=3)).strftime('%H:%M')
 
 def formatar_data(entry):
@@ -38,10 +59,8 @@ def formatar_data(entry):
 
 def limpar_texto(texto):
     if not texto: return ""
-    # Remove HTML
     clean = re.compile('<.*?>')
     t = re.sub(clean, '', texto)
-    # Remove caracteres estranhos
     return html.escape(t).replace('\n', ' ').strip()
 
 def detectar_local(texto):
@@ -51,80 +70,85 @@ def detectar_local(texto):
             return l
     return None
 
-# --- MOTOR DE BUSCA (COM DISFARCE E MEMÓRIA) ---
-def buscar_feed(chave, url):
-    # Cabeçalhos para enganar bloqueios
+# --- MOTOR DE BUSCA INDIVIDUAL (EXECUTADO EM PARALELO) ---
+def baixar_url(chave, url):
     HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/rss+xml, application/xml, text/xml, */*'
     }
-    
-    dados = None
     try:
-        # 1. Tenta baixar
-        r = requests.get(url, headers=HEADERS, verify=False, timeout=10)
+        # Timeout reduzido para 6s. Se PCDF não responder em 6s, desiste para não travar o resto.
+        r = requests.get(url, headers=HEADERS, verify=False, timeout=6)
         if r.status_code == 200:
             feed = feedparser.parse(r.content)
             if feed.entries:
                 entry = feed.entries[0]
-                
-                # 2. Processa dados
                 dados = {
                     "titulo": limpar_texto(entry.title),
                     "link": entry.link,
                     "resumo": limpar_texto(entry.get('summary', entry.get('description', ''))),
                     "hora": formatar_data(entry),
-                    "local": None,
+                    "local": detectar_local(f"{entry.title} {entry.get('summary', '')}"),
                     "status": "🟢 Online"
                 }
-                
-                # 3. Detecta local
-                texto_full = f"{dados['titulo']} {dados['resumo']}"
-                dados['local'] = detectar_local(texto_full)
-                
-                # 4. Salva na memória
-                st.session_state.cache_noticias[chave] = dados
-
-    except Exception as e:
-        # print(f"Erro {chave}: {e}")
+                return chave, dados
+    except:
         pass
+    return chave, None
 
-    # RETORNO INTELIGENTE:
-    # Se baixou novo, retorna novo.
-    # Se falhou, mas tem memória, retorna memória com aviso.
-    if dados:
-        return dados
-    elif chave in st.session_state.cache_noticias:
-        memoria = st.session_state.cache_noticias[chave]
-        memoria['status'] = "⚠️ Offline (Memória)"
-        return memoria
-    else:
-        return None
-
-# --- RENDERIZAÇÃO VISUAL (SEM INDENTAÇÃO PARA NÃO QUEBRAR) ---
-def render_card(chave, nome, url, cor, icone):
-    d = buscar_feed(chave, url)
+# --- GERENCIADOR DE CARREGAMENTO PARALELO ---
+def atualizar_tudo():
+    # Cria uma barra de progresso
+    bar = st.progress(0, text="Iniciando Turbo Download...")
     
-    # Se não tem nada (nem novo, nem memória)
+    # Lista de tarefas
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        # Dispara todos os downloads ao mesmo tempo
+        futuros = {executor.submit(baixar_url, k, v["url"]): k for k, v in FONTES.items()}
+        
+        completos = 0
+        total = len(FONTES)
+        
+        for future in concurrent.futures.as_completed(futuros):
+            chave, dados = future.result()
+            if dados:
+                st.session_state.cache_noticias[chave] = dados
+            
+            # Atualiza barra
+            completos += 1
+            bar.progress(completos / total, text=f"Carregando fontes... {completos}/{total}")
+            
+    time.sleep(0.5)
+    bar.empty() # Remove a barra quando terminar
+
+# --- RENDERIZAÇÃO ---
+def render_card(chave):
+    conf = FONTES[chave]
+    
+    # Pega da memória (que foi atualizada pelo Turbo)
+    d = st.session_state.cache_noticias.get(chave)
+    
+    # Se não tiver nada na memória (nunca carregou)
     if not d:
         st.markdown(f"""
-<div style="background:#eee; padding:15px; border-radius:10px; border-left:5px solid #999; margin-bottom:15px; opacity:0.6;">
-    <strong style="color:#555">{icone} {nome}</strong><br>
-    <span style="font-size:12px">Conectando...</span>
+<div style="background:#f4f4f4; padding:15px; border-radius:10px; border-left:5px solid #ccc; margin-bottom:15px; opacity:0.6;">
+    <strong style="color:#555">{conf['icone']} {conf['nome']}</strong><br>
+    <span style="font-size:11px">Aguardando...</span>
 </div>""", unsafe_allow_html=True)
         return
 
-    # Monta tags
+    # Se tiver na memória, verifica se é atualização recente ou velha
+    status_label = d.get('status', '⚠️ Memória')
+
     tag_local = ""
     if d['local']:
         tag_local = f"<span style='background:#e3f2fd; color:#1565c0; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:800; margin-left:5px;'>📍 {d['local']}</span>"
 
-    # HTML CRÍTICO - NÃO ADICIONE ESPAÇOS NO INÍCIO DAS LINHAS ABAIXO
     html_card = f"""
-<div style="background:white; padding:15px; border-radius:12px; box-shadow:0 3px 8px rgba(0,0,0,0.08); margin-bottom:15px; border-left:5px solid {cor}; border:1px solid #eee;">
+<div style="background:white; padding:15px; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,0.05); margin-bottom:15px; border-left:5px solid {conf['cor']}; border:1px solid #eee;">
 <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
-<div><span style="font-weight:900; color:{cor}; font-size:12px;">{icone} {nome}</span>{tag_local}</div>
-<div style="text-align:right;"><div style="font-size:11px; font-weight:bold; color:#555;">{d['hora']}</div><div style="font-size:9px; color:#999;">{d['status']}</div></div>
+<div><span style="font-weight:900; color:{conf['cor']}; font-size:12px;">{conf['icone']} {conf['nome']}</span>{tag_local}</div>
+<div style="text-align:right;"><div style="font-size:11px; font-weight:bold; color:#555;">{d['hora']}</div><div style="font-size:9px; color:#999;">{status_label}</div></div>
 </div>
 <div style="font-size:15px; font-weight:800; color:#222; margin-bottom:8px; line-height:1.3;">{d['titulo']}</div>
 <div style="font-size:13px; color:#555; margin-bottom:12px; line-height:1.4; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;">{d['resumo'][:160]}...</div>
@@ -137,20 +161,26 @@ def render_card(chave, nome, url, cor, icone):
 c_topo1, c_topo2 = st.columns([4, 1])
 with c_topo1: st.markdown("### 📺 Pauta Fácil TV")
 with c_topo2: 
-    if st.button("🔄 ATUALIZAR"): st.rerun()
+    if st.button("🚀 TURBO UPDATE", type="primary"):
+        atualizar_tudo()
+        st.rerun()
+
+# Se for a primeira vez que abre, já roda o turbo
+if not st.session_state.cache_noticias:
+    atualizar_tudo()
 
 st.caption(f"Última verificação: {hora_brasilia()}")
 
 st.markdown("#### 🚨 Policial & Segurança")
 c1, c2, c3 = st.columns(3)
-with c1: render_card("pcdf", "PCDF", "https://www.pcdf.df.gov.br/noticias?format=feed&type=rss", "#2c3e50", "🕵️‍♂️")
-with c2: render_card("metro", "METRÓPOLES", "https://www.metropoles.com/distrito-federal/feed", "#007bff", "📱")
-with c3: render_card("pcgo", "PCGO", "https://policiacivil.go.gov.br/feed", "#c0392b", "🔫")
+with c1: render_card("pcdf")
+with c2: render_card("metro")
+with c3: render_card("pcgo")
 
 st.markdown("---")
 st.markdown("#### 🏛️ Poder & Serviços")
 c4, c5, c6, c7 = st.columns(4)
-with c4: render_card("gdf", "GDF", "https://www.agenciabrasilia.df.gov.br/feed/", "#009688", "📢")
-with c5: render_card("mp", "MPDFT", "https://www.mpdft.mp.br/portal/index.php/comunicacao-menu/noticias?format=feed&type=rss", "#b71c1c", "⚖️")
-with c6: render_card("senado", "SENADO", "https://www12.senado.leg.br/noticias/feed/metadados/agencia", "#673ab7", "🏛️")
-with c7: render_card("cbm", "BOMBEIROS", "https://www.cbm.df.gov.br/feed/", "#f39c12", "🔥")
+with c4: render_card("gdf")
+with c5: render_card("mp")
+with c6: render_card("senado")
+with c7: render_card("cbm")
