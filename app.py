@@ -2,50 +2,53 @@ import streamlit as st
 import feedparser
 import requests
 import re
+import html
 import urllib3
-from datetime import datetime
-import pytz
+from datetime import datetime, timedelta
+import time
 
 # --- CONFIGURAÇÃO ---
 st.set_page_config(
-    page_title="Pauta Fácil RSS",
+    page_title="Pauta Fácil TV",
     layout="wide",
-    page_icon="📡",
-    initial_sidebar_state="expanded"
+    page_icon="📺",
+    initial_sidebar_state="collapsed" # Esconde a sidebar para dar mais espaço na TV
 )
 
-# Desabilitar avisos de segurança (Necessário para PCDF)
+# Ignorar avisos de SSL (Para PCDF)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# HEADERS (Disfarce de Navegador)
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Referer': 'https://www.google.com/'
-}
-
-# --- FUNÇÃO DE CARREGAMENTO BLINDADA ---
-@st.cache_data(ttl=300) # Atualiza a cada 5 min
-def carregar_rss(url):
-    try:
-        # O Requests baixa o conteúdo "na força bruta", ignorando SSL e bloqueios
-        resp = requests.get(url, headers=HEADERS, verify=False, timeout=15)
-        if resp.status_code == 200:
-            # O feedparser apenas lê o que o requests baixou
-            return feedparser.parse(resp.content)
-    except:
-        pass
-    # Retorna vazio se der erro
-    return feedparser.FeedParserDict(entries=[])
+# --- INICIALIZAÇÃO DA MEMÓRIA ---
+# Isso garante que a última notícia fique salva mesmo se o site cair
+if 'cache_noticias' not in st.session_state:
+    st.session_state.cache_noticias = {}
 
 # --- UTILITÁRIOS ---
-def hora_atual():
-    return datetime.now(pytz.timezone('America/Sao_Paulo')).strftime('%H:%M')
+def hora_atual_brasilia():
+    # Ajuste simples para UTC-3 (Brasília)
+    return (datetime.utcnow() - timedelta(hours=3)).strftime('%H:%M')
 
-def limpar_html(texto):
-    """Remove tags HTML do resumo"""
+def formatar_data_rss(entry):
+    """ Tenta extrair e formatar a hora da publicação do RSS """
+    try:
+        if hasattr(entry, 'published_parsed') and entry.published_parsed:
+            # Converte a tupla de tempo do RSS para datetime
+            dt = datetime.fromtimestamp(time.mktime(entry.published_parsed))
+            # Ajusta fuso (RSS geralmente é UTC ou local, vamos assumir -3h para simplificar visualização)
+            dt = dt - timedelta(hours=3)
+            return dt.strftime('%d/%m %H:%M')
+    except:
+        pass
+    return "Recente"
+
+def limpar_texto(texto):
+    """ Limpa HTML e caracteres que quebram o layout """
+    if not texto: return ""
+    # Remove tags HTML
     clean = re.compile('<.*?>')
-    return re.sub(clean, '', texto)
+    texto_sem_html = re.sub(clean, '', texto)
+    # Escapa caracteres especiais (resolve o bug do </div> aparecendo)
+    return html.escape(texto_sem_html)
 
 # --- DETECTOR DE LOCAL ---
 LOCAIS_ALVO = ["Ceilândia", "Taguatinga", "Samambaia", "Gama", "Santa Maria", "Planaltina", "Recanto das Emas", "São Sebastião", "Brazlândia", "Sol Nascente", "Pôr do Sol", "Paranoá", "Núcleo Bandeirante", "Guará", "Sobradinho", "Jardim Botânico", "Lago Norte", "Lago Sul", "Águas Claras", "Riacho Fundo", "Candangolândia", "Vicente Pires", "Varjão", "Fercal", "Itapoã", "Sia", "Cruzeiro", "Sudoeste", "Octogonal", "Luziânia", "Valparaíso", "Águas Lindas", "Novo Gama", "Cidade Ocidental", "Formosa", "Santo Antônio", "Padre Bernardo", "Alexânia", "Planaltina de Goiás", "Esplanada", "Buriti", "Câmara Legislativa"]
@@ -56,84 +59,147 @@ def detectar_local(texto):
             return l
     return None
 
-# --- PROCESSADOR DE FEED ---
-def processar_feed(nome_fonte, url_rss, cor_borda, icone):
-    feed = carregar_rss(url_rss)
+# --- MOTOR DE BUSCA (COM MEMÓRIA) ---
+def buscar_feed(chave, url_rss):
+    """ 
+    Tenta baixar. 
+    Se conseguir -> Atualiza memória e retorna.
+    Se falhar -> Retorna o que tem na memória.
+    """
+    HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/rss+xml, application/xml, text/xml, */*'
+    }
     
-    # Se estiver vazio
-    if not feed.entries:
+    sucesso = False
+    dados_novos = None
+
+    try:
+        # Tenta baixar com Requests (mais robusto que feedparser direto)
+        resp = requests.get(url_rss, headers=HEADERS, verify=False, timeout=10)
+        if resp.status_code == 200:
+            feed = feedparser.parse(resp.content)
+            if feed.entries:
+                entry = feed.entries[0]
+                
+                # Prepara os dados limpos
+                dados_novos = {
+                    "titulo": limpar_texto(entry.title),
+                    "link": entry.link,
+                    "resumo": limpar_texto(entry.get('summary', entry.get('description', ''))),
+                    "hora": formatar_data_rss(entry),
+                    "status": "🟢 Online"
+                }
+                
+                # Detecta local
+                texto_completo = f"{dados_novos['titulo']} {dados_novos['resumo']}"
+                dados_novos['local'] = detectar_local(texto_completo)
+                
+                # Salva na memória
+                st.session_state.cache_noticias[chave] = dados_novos
+                sucesso = True
+    except Exception as e:
+        # print(f"Erro ao buscar {chave}: {e}") # Debug
+        pass
+
+    # Retorno: Dados novos OU Dados da memória OU None
+    if sucesso:
+        return dados_novos
+    elif chave in st.session_state.cache_noticias:
+        # Recupera da memória e avisa que é cache
+        dados_antigos = st.session_state.cache_noticias[chave]
+        dados_antigos['status'] = "⚠️ Memória" 
+        return dados_antigos
+    else:
+        return None
+
+# --- RENDERIZAÇÃO DO CARD ---
+def render_card(chave, nome, url, cor, icone):
+    dados = buscar_feed(chave, url)
+    
+    if not dados:
+        # Caso nunca tenha carregado nada
         st.markdown(f"""
-        <div style="background:white; padding:15px; border-radius:10px; border-left:5px solid #ccc; opacity:0.7; margin-bottom:15px; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
-            <strong>{icone} {nome_fonte}</strong><br>
-            <span style="font-size:12px; color:#666">Sem novidades ou conexão instável.</span>
+        <div style="background:#f0f2f6; padding:15px; border-radius:10px; border-left:5px solid #ccc; margin-bottom:15px; opacity:0.6;">
+            <strong style="color:#555">{icone} {nome}</strong><br>
+            <span style="font-size:12px; color:#777">Aguardando primeira conexão...</span>
         </div>
         """, unsafe_allow_html=True)
         return
 
-    # Pega a notícia mais recente
-    post = feed.entries[0]
-    titulo = post.title
-    link = post.link
-    
-    # Tenta pegar resumo
-    resumo = ""
-    if 'summary' in post: resumo = post.summary
-    elif 'description' in post: resumo = post.description
-    
-    resumo_limpo = limpar_html(resumo)[:160] # Limita caracteres
-    if len(resumo_limpo) > 150: resumo_limpo += "..."
-    
-    local = detectar_local(titulo + " " + resumo_limpo)
-    
-    tags_html = ""
-    if local: tags_html = f"<span style='background:#e3f2fd; color:#1565c0; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:bold;'>📍 {local}</span>"
-    
-    st.markdown(f"""
-    <div style="background:white; padding:15px; border-radius:10px; box-shadow:0 4px 10px rgba(0,0,0,0.08); margin-bottom:15px; border-left:5px solid {cor_borda}; transition: transform 0.2s;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <span style="font-weight:bold; color:{cor_borda}; font-size:12px; text-transform:uppercase; font-family:sans-serif;">{icone} {nome_fonte}</span>
-            {tags_html}
+    # Monta as Tags
+    html_tags = ""
+    if dados['local']:
+        html_tags += f"<span style='background:#e3f2fd; color:#1565c0; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:800; margin-left:5px;'>📍 {dados['local']}</span>"
+
+    # HTML Seguro (Sem f-strings complexas que quebram o layout)
+    card_html = f"""
+    <div style="background:white; padding:15px; border-radius:12px; box-shadow:0 3px 10px rgba(0,0,0,0.08); margin-bottom:15px; border-left:5px solid {cor}; border-top:1px solid #eee; border-right:1px solid #eee; border-bottom:1px solid #eee;">
+        
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+            <div>
+                <span style="font-weight:900; color:{cor}; font-size:12px; text-transform:uppercase; letter-spacing:0.5px;">{icone} {nome}</span>
+                {html_tags}
+            </div>
+            <div style="text-align:right;">
+                <div style="font-size:11px; font-weight:bold; color:#555;">{dados['hora']}</div>
+                <div style="font-size:9px; color:#999;">{dados['status']}</div>
+            </div>
         </div>
-        <div style="font-size:15px; font-weight:700; margin-bottom:8px; line-height:1.3; color:#222; font-family:sans-serif;">{titulo}</div>
-        <div style="font-size:12px; color:#555; margin-bottom:12px; line-height:1.4; font-family:sans-serif;">{resumo_limpo}</div>
+
+        <div style="font-size:15px; font-weight:800; color:#222; margin-bottom:8px; line-height:1.4;">
+            {dados['titulo']}
+        </div>
+
+        <div style="font-size:13px; color:#555; margin-bottom:12px; line-height:1.4; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;">
+            {dados['resumo'][:180]}...
+        </div>
+
         <div style="text-align:right;">
-            <a href="{link}" target="_blank" style="text-decoration:none; color:#333; font-weight:800; font-size:11px; background:#f5f5f5; padding:6px 12px; border-radius:4px;">LER MATÉRIA ➜</a>
+            <a href="{dados['link']}" target="_blank" style="display:inline-block; text-decoration:none; color:#333; font-weight:800; font-size:11px; background:#f0f2f6; padding:8px 14px; border-radius:6px; transition:0.2s;">LER MATÉRIA ➜</a>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    
+    st.markdown(card_html, unsafe_allow_html=True)
 
-# --- SIDEBAR ---
-with st.sidebar:
-    st.title("📡 Pauta Fácil")
-    st.caption("Monitoramento RSS Híbrido")
-    if st.button("🔄 ATUALIZAR AGORA", type="primary", use_container_width=True): 
-        st.cache_data.clear()
+# --- CABEÇALHO ---
+c_head1, c_head2 = st.columns([3, 1])
+with c_head1:
+    st.markdown("### 📺 Pauta Fácil TV")
+with c_head2:
+    if st.button("🔄 ATUALIZAR", type="primary", use_container_width=True):
         st.rerun()
-    st.write("---")
-    st.markdown(f"**Brasília: {hora_atual()}**")
 
-# --- LAYOUT PRINCIPAL ---
-st.markdown("### 🚨 Plantão Policial")
-c1, c2, c3 = st.columns(3)
+st.markdown(f"<div style='text-align:right; font-size:12px; color:#666; margin-top:-10px; margin-bottom:20px;'>Última verificação: <b>{hora_atual_brasilia()}</b></div>", unsafe_allow_html=True)
 
-with c1:
-    processar_feed("PCDF", "https://www.pcdf.df.gov.br/noticias?format=feed&type=rss", "#000", "🕵️‍♂️")
-with c2:
-    # Metrópoles DF (Cobre PMDF/Bombeiros)
-    processar_feed("METRÓPOLES", "https://www.metropoles.com/distrito-federal/feed", "#007bff", "📱")
-with c3:
-    # Jornal Opção (Entorno) ou PCGO
-    processar_feed("PCGO", "https://policiacivil.go.gov.br/feed", "#1565c0", "🔫")
+# --- COLUNAS DE NOTÍCIAS ---
+st.markdown("#### 🚨 Policial & Segurança")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    render_card("pcdf", "PCDF", "https://www.pcdf.df.gov.br/noticias?format=feed&type=rss", "#2c3e50", "🕵️‍♂️")
+
+with col2:
+    # Metrópoles (Distrito Federal)
+    render_card("metro", "METRÓPOLES", "https://www.metropoles.com/distrito-federal/feed", "#007bff", "📱")
+
+with col3:
+    # PCGO
+    render_card("pcgo", "PCGO", "https://policiacivil.go.gov.br/feed", "#c0392b", "🔫")
 
 st.markdown("---")
-st.markdown("### 🏛️ Poder & Serviços")
-c4, c5, c6, c7 = st.columns(4)
+st.markdown("#### 🏛️ Poder & Serviços")
+col4, col5, col6, col7 = st.columns(4)
 
-with c4:
-    processar_feed("GDF", "https://www.agenciabrasilia.df.gov.br/feed/", "#009688", "📢")
-with c5:
-    processar_feed("MPDFT", "https://www.mpdft.mp.br/portal/index.php/comunicacao-menu/noticias?format=feed&type=rss", "#b71c1c", "⚖️")
-with c6:
-    processar_feed("SENADO", "https://www12.senado.leg.br/noticias/feed/metadados/agencia", "#673ab7", "🏛️")
-with c7:
-    processar_feed("BOMBEIROS", "https://www.cbm.df.gov.br/feed/", "#fbc02d", "🔥")
+with col4:
+    render_card("gdf", "GDF", "https://www.agenciabrasilia.df.gov.br/feed/", "#009688", "📢")
+
+with col5:
+    render_card("mp", "MPDFT", "https://www.mpdft.mp.br/portal/index.php/comunicacao-menu/noticias?format=feed&type=rss", "#b71c1c", "⚖️")
+
+with col6:
+    render_card("senado", "SENADO", "https://www12.senado.leg.br/noticias/feed/metadados/agencia", "#673ab7", "🏛️")
+
+with col7:
+    render_card("cbm", "BOMBEIROS", "https://www.cbm.df.gov.br/feed/", "#f39c12", "🔥")
