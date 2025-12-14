@@ -5,204 +5,260 @@ import urllib3
 import re
 from datetime import datetime
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Radar News DF - Inteligência", layout="wide", page_icon="📡")
+# --- CONFIGURAÇÃO DA PÁGINA (WIDE E ÍCONE) ---
+st.set_page_config(
+    page_title="Radar News DF",
+    layout="wide",
+    page_icon="📡",
+    initial_sidebar_state="expanded"
+)
 
 # Desabilitar avisos SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36'}
 
-# --- CÉREBRO: BANCO DE DADOS DE LOCAIS (DF + ENTORNO) ---
-# Adicione aqui todas as cidades/RAs que você quer monitorar
+# --- ESTILOS CSS PROFISSIONAIS ---
+st.markdown("""
+    <style>
+    /* Fundo geral e fontes */
+    .main { background-color: #f8f9fa; }
+    h1, h2, h3 { font-family: 'Segoe UI', sans-serif; }
+    
+    /* Card de Notícia */
+    .news-card {
+        background-color: white;
+        border-radius: 12px;
+        padding: 0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        transition: transform 0.2s, box-shadow 0.2s;
+        margin-bottom: 20px;
+        border: 1px solid #eee;
+        overflow: hidden;
+    }
+    .news-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 15px rgba(0,0,0,0.1);
+    }
+    
+    /* Cabeçalho do Card (Colorido) */
+    .card-header {
+        padding: 10px 15px;
+        font-size: 12px;
+        font-weight: bold;
+        text-transform: uppercase;
+        color: white;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    
+    /* Corpo do Card */
+    .card-body { padding: 15px; }
+    .news-title {
+        font-size: 16px;
+        font-weight: 700;
+        color: #2c3e50;
+        line-height: 1.4;
+        margin-bottom: 12px;
+        min-height: 45px; /* Alinha altura */
+    }
+    
+    /* Tags */
+    .tags-container { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
+    .tag {
+        font-size: 10px;
+        padding: 3px 8px;
+        border-radius: 20px;
+        font-weight: 700;
+        display: inline-flex;
+        align-items: center;
+    }
+    .tag-local { background-color: #e3f2fd; color: #1565c0; border: 1px solid #bbdefb; }
+    .tag-video { background-color: #fce4ec; color: #c2185b; border: 1px solid #f8bbd0; }
+    .tag-foto { background-color: #f3e5f5; color: #7b1fa2; border: 1px solid #e1bee7; }
+    
+    /* Botão Link */
+    .card-footer {
+        padding: 10px 15px;
+        background-color: #f8f9fa;
+        border-top: 1px solid #eee;
+        text-align: right;
+    }
+    .read-btn {
+        text-decoration: none;
+        color: #333;
+        font-size: 12px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 5px;
+    }
+    .read-btn:hover { color: #007bff; }
+    
+    /* Ajustes Dark Mode (Streamlit nativo cuida do resto, mas ajustamos cards) */
+    @media (prefers-color-scheme: dark) {
+        .news-card { background-color: #262730; border-color: #333; }
+        .card-footer { background-color: #1e1e1e; border-color: #333; }
+        .news-title { color: #e0e0e0; }
+        .read-btn { color: #ccc; }
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- LOCAIS E FUNÇÕES (MANTIDOS DA VERSÃO ANTERIOR) ---
 LOCAIS_ALVO = [
     "Ceilândia", "Taguatinga", "Samambaia", "Gama", "Santa Maria", "Planaltina", "Recanto das Emas",
     "São Sebastião", "Brazlândia", "Sol Nascente", "Pôr do Sol", "Paranoá", "Núcleo Bandeirante",
     "Guará", "Sobradinho", "Jardim Botânico", "Lago Norte", "Lago Sul", "Águas Claras", "Riacho Fundo",
     "Candangolândia", "Vicente Pires", "Varjão", "Fercal", "Itapoã", "Sia", "Cruzeiro", "Sudoeste", "Octogonal",
     "Luziânia", "Valparaíso", "Águas Lindas", "Novo Gama", "Cidade Ocidental", "Formosa", "Santo Antônio do Descoberto",
-    "Padre Bernardo", "Alexânia", "Planaltina de Goiás"
+    "Padre Bernardo", "Alexânia", "Planaltina de Goiás", "Esplanada", "Buriti", "Câmara Legislativa"
 ]
 
-# --- FUNÇÃO INVESTIGADORA (ENTRA NO LINK) ---
-def investigar_detalhes(url, site_tipo):
-    """
-    Entra no link, procura onde foi e se tem mídia.
-    Retorna: (Local, Tem_Foto, Tem_Video)
-    """
-    local_encontrado = "Local não citado"
+def investigar_detalhes(url):
+    local_encontrado = None
     tem_foto = False
     tem_video = False
-
     try:
-        r = requests.get(url, headers=HEADERS, timeout=10, verify=False)
+        r = requests.get(url, headers=HEADERS, timeout=8, verify=False)
         if r.status_code == 200:
             soup = BeautifulSoup(r.content, 'html.parser')
-            texto_completo = soup.get_text()
-
-            # 1. Caça ao Local (Procura no texto da matéria)
-            # Prioridade: Tenta achar o nome da RA ou Cidade no texto
+            texto = soup.get_text()
             for local in LOCAIS_ALVO:
-                # Procura o local no texto (ignorando maiúsculas/minúsculas)
-                if re.search(r'\b' + re.escape(local) + r'\b', texto_completo, re.IGNORECASE):
+                if re.search(r'\b' + re.escape(local) + r'\b', texto, re.IGNORECASE):
                     local_encontrado = local
-                    break # Achou o primeiro, para (geralmente o mais relevante aparece antes)
-
-            # 2. Caça a Vídeos
-            # Procura iframes (Youtube) ou tags video
-            if soup.find('iframe') or soup.find('video') or "youtube.com" in str(soup):
-                tem_video = True
-            
-            # 3. Caça a Fotos
-            # Conta quantas imagens tem na área de conteúdo
-            # Heurística simples: se tiver mais de 2 imagens grandes, provavelmente tem foto da ocorrência
-            imgs = soup.find_all('img')
-            if len(imgs) > 2: 
-                tem_foto = True
-                
-    except:
-        pass # Se der erro ao entrar, retorna o padrão
-
+                    break
+            if soup.find('iframe') or soup.find('video') or "youtube.com" in str(soup): tem_video = True
+            if len(soup.find_all('img')) > 2: tem_foto = True
+    except: pass
     return local_encontrado, tem_foto, tem_video
 
-# --- SCRAPERS PRINCIPAIS ---
-
-def buscar_pcdf():
+def buscar_generico(url, seletor_tag, seletor_classe=None, regex_link=None):
     try:
-        url = "https://www.pcdf.df.gov.br/noticias"
-        r = requests.get(url, headers=HEADERS, timeout=10, verify=False)
+        r = requests.get(url, headers=HEADERS, timeout=12, verify=False)
         if r.status_code == 200:
             soup = BeautifulSoup(r.content, 'html.parser')
-            link = soup.find('a', href=re.compile(r'/noticias/\d+'))
-            if link:
-                url_final = link['href']
-                if not url_final.startswith('http'): url_final = "https://www.pcdf.df.gov.br" + url_final
-                titulo = link.get_text().strip()
-                
-                # INVESTIGAÇÃO PROFUNDA
-                local, foto, video = investigar_detalhes(url_final, "pcdf")
-                return titulo, url_final, local, foto, video
-    except: pass
-    return None, None, None, None, None
-
-def buscar_pmdf():
-    try:
-        url = "https://portal.pm.df.gov.br/ocorrencias/"
-        r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.content, 'html.parser')
-            headers = soup.find_all(['h3', 'h2', 'h4'])
-            for h in headers:
-                l = h.find('a')
-                if l and len(l.get_text()) > 15:
-                    url_final = l['href']
-                    titulo = l.get_text().strip()
+            alvo = soup.find('a', href=re.compile(regex_link)) if regex_link else soup.find(seletor_tag, class_=seletor_classe) if seletor_classe else soup.find(seletor_tag)
+            
+            if alvo:
+                link_tag = alvo if alvo.name == 'a' else alvo.find('a')
+                if link_tag:
+                    titulo = link_tag.get_text().strip()
+                    url_final = link_tag['href']
+                    if not url_final.startswith('http'):
+                        base = "/".join(url.split('/')[:3])
+                        if not url_final.startswith('/'): url_final = '/' + url_final
+                        url_final = base + url_final
                     
-                    # INVESTIGAÇÃO PROFUNDA
-                    local, foto, video = investigar_detalhes(url_final, "pmdf")
-                    return titulo, url_final, local, foto, video
+                    if len(titulo) > 10:
+                        local, foto, video = investigar_detalhes(url_final)
+                        return titulo, url_final, local, foto, video
     except: pass
     return None, None, None, None, None
 
-def buscar_cbmdf():
-    try:
-        url = "https://www.cbm.df.gov.br/category/noticias/"
-        r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.content, 'html.parser')
-            artigo = soup.find('h2', class_='entry-title')
-            if artigo and artigo.find('a'):
-                l = artigo.find('a')
-                url_final = l['href']
-                titulo = l.get_text().strip()
-                
-                # INVESTIGAÇÃO PROFUNDA
-                local, foto, video = investigar_detalhes(url_final, "cbmdf")
-                return titulo, url_final, local, foto, video
-    except: pass
-    return None, None, None, None, None
+# --- DEFINIÇÕES DE FONTES ---
+# (Mesmas funções de antes, simplificadas aqui para economizar espaço visual no código)
+def pcdf(): return buscar_generico("https://www.pcdf.df.gov.br/noticias", "a", regex_link=r'/noticias/\d+')
+def pmdf(): return buscar_generico("https://portal.pm.df.gov.br/ocorrencias/", "h3") 
+def cbmdf(): return buscar_generico("https://www.cbm.df.gov.br/category/noticias/", "h2", "entry-title")
+def pcgo(): return buscar_generico("https://policiacivil.go.gov.br/noticias", "h2", "entry-title")
+def metropoles(): return buscar_generico("https://www.metropoles.com/distrito-federal", "h3")
+def agencia(): return buscar_generico("https://www.agenciabrasilia.df.gov.br/", "h3")
+def mpdft(): return buscar_generico("https://www.mpdft.mp.br/portal/index.php/comunicacao-menu/noticias", "h2")
+def tjdft(): return buscar_generico("https://www.tjdft.jus.br/institucional/imprensa/noticias", "article", "entry")
+def cldf(): return buscar_generico("https://www.cl.df.gov.br/web/guest/noticias", "h3")
 
-def buscar_pcgo():
-    try:
-        url = "https://policiacivil.go.gov.br/noticias"
-        r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.content, 'html.parser')
-            manchete = soup.find('h2', class_='entry-title') or soup.find('h3', class_='entry-title')
-            if manchete and manchete.find('a'):
-                l = manchete.find('a')
-                url_final = l['href']
-                titulo = l.get_text().strip()
-                
-                # INVESTIGAÇÃO PROFUNDA
-                local, foto, video = investigar_detalhes(url_final, "pcgo")
-                return titulo, url_final, local, foto, video
-    except: pass
-    return None, None, None, None, None
+# --- SIDEBAR (CONTROLES) ---
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/2537/2537853.png", width=50)
+    st.title("Radar News DF")
+    st.markdown("Central de Monitoramento")
+    
+    st.write("---")
+    
+    if st.button("🔄 ATUALIZAR AGORA", type="primary", use_container_width=True):
+        st.rerun()
+        
+    st.write("---")
+    st.caption("Fontes Monitoradas:")
+    st.markdown("- 🚓 Polícias (Civil/Militar)\n- 🔥 Bombeiros\n- 🏛️ GDF/Justiça\n- 📰 Imprensa Local")
+    st.write("---")
+    st.caption(f"Versão 7.0 | {datetime.now().strftime('%d/%m/%Y')}")
 
-# --- FRONT-END (VISUAL) ---
+# --- DASHBOARD PRINCIPAL ---
 
-st.markdown("""
-    <style>
-    .card { background-color: white; padding: 20px; border-radius: 12px; border: 1px solid #e0e0e0; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
-    .titulo { font-size: 18px; font-weight: 700; color: #2c3e50; line-height: 1.4; margin-bottom: 10px; }
-    .tag-local { background-color: #e1f5fe; color: #0277bd; padding: 4px 8px; border-radius: 4px; font-size: 13px; font-weight: bold; }
-    .tag-midia { background-color: #ffebee; color: #c62828; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-right: 5px; }
-    .tag-video { background-color: #f3e5f5; color: #7b1fa2; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
-    .btn-link { text-decoration: none; display: inline-block; margin-top: 10px; color: #2980b9; font-weight: bold; }
-    </style>
-""", unsafe_allow_html=True)
+# Métricas de Topo
+col_m1, col_m2, col_m3 = st.columns(3)
+col_m1.metric("Fontes Ativas", "9 Portais", delta="Online")
+col_m2.metric("Regiões Alvo", f"{len(LOCAIS_ALVO)} Locais", delta="DF + Entorno")
+col_m3.metric("Última Varredura", datetime.now().strftime('%H:%M:%S'), delta_color="off")
 
-st.title("📡 Radar News DF - Inteligência de Pauta")
-st.markdown("**Monitoramento Oficial com Detecção de Local e Mídia**")
+st.markdown("<br>", unsafe_allow_html=True)
 
-if st.button('🔄 RASTREAR NOVAS OCORRÊNCIAS', type="primary", use_container_width=True):
-    st.rerun()
-
-st.write("---")
-
-col1, col2, col3, col4 = st.columns(4)
-
-# Função auxiliar para desenhar o card
-def desenhar_card(nome_fonte, icone, dados, cor_borda):
+# Função para desenhar o Card Bonito
+def render_card(titulo_fonte, cor_fundo, icone, dados):
     titulo, link, local, foto, video = dados
     
-    html_tags = ""
-    if local != "Local não citado":
-        html_tags += f'<span class="tag-local">📍 {local}</span><br><br>'
-    
-    if video: html_tags += '<span class="tag-video">🎥 TEM VÍDEO</span> '
-    if foto: html_tags += '<span class="tag-midia">📸 TEM FOTO</span>'
-    
-    if not video and not foto:
-        html_tags += '<span style="font-size:12px; color:#999">Apenas texto</span>'
-
-    if titulo:
-        st.success(f"{icone} {nome_fonte}: Online")
+    if not titulo:
+        # Card vazio/erro
         st.markdown(f"""
-        <div class="card" style="border-top: 5px solid {cor_borda}">
-            {html_tags}
-            <div class="titulo">{titulo}</div>
-            <a href="{link}" target="_blank" class="btn-link">🔗 ABRIR MATÉRIA</a>
+        <div class="news-card" style="opacity: 0.6;">
+            <div class="card-header" style="background-color: #ccc;">{titulo_fonte} <span style="font-size:10px">OFFLINE/SEM DADOS</span></div>
+            <div class="card-body">
+                <div class="news-title" style="color:#999; font-style:italic; font-size:14px;">Nenhuma novidade recente detectada na varredura.</div>
+            </div>
         </div>
         """, unsafe_allow_html=True)
-    else:
-        st.warning(f"{nome_fonte} (Sem novidades)")
+        return
 
-# --- EXIBIÇÃO ---
-with col1:
-    dados_pcdf = buscar_pcdf()
-    desenhar_card("PCDF", "🚨", dados_pcdf, "#000000")
+    # Tags HTML
+    tags_html = '<div class="tags-container">'
+    if local: tags_html += f'<span class="tag tag-local">📍 {local}</span>'
+    if video: tags_html += '<span class="tag tag-video">🎥 VÍDEO</span>'
+    if foto: tags_html += '<span class="tag tag-foto">📸 FOTOS</span>'
+    tags_html += '</div>'
 
-with col2:
-    dados_pmdf = buscar_pmdf()
-    desenhar_card("PMDF", "🚓", dados_pmdf, "#d32f2f")
+    # Renderiza Card Completo
+    st.markdown(f"""
+    <div class="news-card">
+        <div class="card-header" style="background: {cor_fundo};">
+            <span>{icone} {titulo_fonte}</span>
+            <span style="background:rgba(255,255,255,0.2); padding:2px 6px; border-radius:4px;">AGORA</span>
+        </div>
+        <div class="card-body">
+            {tags_html}
+            <div class="news-title">{titulo}</div>
+        </div>
+        <div class="card-footer">
+            <a href="{link}" target="_blank" class="read-btn">LER MATÉRIA COMPLETA ➜</a>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-with col3:
-    dados_cbmdf = buscar_cbmdf()
-    desenhar_card("BOMBEIROS", "🔥", dados_cbmdf, "#fbc02d")
+# --- ORGANIZAÇÃO DAS ABAS ---
+tab_policia, tab_poder, tab_concorrencia = st.tabs(["🚨 PLANTÃO POLICIAL", "🏛️ PODER & SERVIÇOS", "📰 DESTAQUES PORTAIS"])
 
-with col4:
-    dados_pcgo = buscar_pcgo()
-    desenhar_card("PCGO", "🕵️‍♂️", dados_pcgo, "#1976d2")
+with tab_policia:
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: render_card("PCDF", "linear-gradient(45deg, #000000, #434343)", "🕵️‍♂️", pcdf())
+    with c2: render_card("PMDF", "linear-gradient(45deg, #d32f2f, #b71c1c)", "🚓", pmdf())
+    with c3: render_card("BOMBEIROS", "linear-gradient(45deg, #fbc02d, #f57f17)", "🔥", cbmdf())
+    with c4: render_card("PCGO (Entorno)", "linear-gradient(45deg, #1565c0, #0d47a1)", "🔫", pcgo())
 
-st.caption(f"Dados processados às {datetime.now().strftime('%H:%M:%S')} - Varredura automática nas matérias.")
+with tab_poder:
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: render_card("AGÊNCIA BSB", "#009688", "📢", agencia())
+    with c2: render_card("MPDFT", "#b71c1c", "⚖️", mpdft())
+    with c3: render_card("TJDFT", "#607d8b", "🔨", tjdft())
+    with c4: render_card("CÂMARA (CLDF)", "#673ab7", "🏛️", cldf())
+
+with tab_poder: # Adicionando espaço ou reorganizando se quiser
+    pass
+
+with tab_concorrencia:
+    col_main, col_spacer = st.columns([1, 2])
+    with col_main:
+        render_card("METRÓPOLES DF", "linear-gradient(45deg, #0288d1, #26c6da)", "📱", metropoles())
+    with col_spacer:
+        st.info("💡 Dica: O Metrópoles costuma atualizar muito rápido. Se aparecer aqui, confirme na PCDF/PMDF antes de rodar.")
