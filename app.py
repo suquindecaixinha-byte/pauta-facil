@@ -110,32 +110,72 @@ def investigar_detalhes(url):
 # --- FUNÇÕES DE BUSCA CORRIGIDAS (V10) ---
 
 def pcdf_corrigida():
-    """ Busca na PCDF sem regex estrito, pega o primeiro link de notícia real """
+    """
+    Versão 'Rede de Arrastão' para PCDF.
+    Tenta de tudo para não retornar vazio.
+    """
     try:
-        # A PCDF as vezes muda a URL base, vamos garantir
+        # Tenta a página de notícias principal
         url = "https://www.pcdf.df.gov.br/noticias"
-        r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+        
+        # Headers reforçados para evitar bloqueio 403
+        headers_pcdf = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.google.com/'
+        }
+        
+        r = requests.get(url, headers=headers_pcdf, timeout=20, verify=False)
+        
         if r.status_code == 200:
             soup = BeautifulSoup(r.content, 'html.parser')
             
-            # Pega TODOS os links da página
-            links = soup.find_all('a', href=True)
+            # --- TENTATIVA 1: Busca por Cabeçalhos (Padrão Joomla da PCDF) ---
+            # O site da PCDF costuma usar <h4> para títulos de listas
+            candidatos = soup.find_all(['h4', 'h5', 'h3'])
             
-            for link in links:
-                href = link['href']
-                texto = link.get_text().strip()
-                
-                # Filtro: Link tem que ter 'noticias' E o texto tem que ser grande (> 25 chars)
-                # Isso evita pegar botões de menu como "Mais notícias"
-                if '/noticias/' in href and len(texto) > 25:
-                    url_final = href
-                    if not url_final.startswith('http'): url_final = "https://www.pcdf.df.gov.br" + url_final
+            for tag in candidatos:
+                link = tag.find('a')
+                if link:
+                    texto = link.get_text().strip()
+                    href = link['href']
                     
-                    local, foto, video, hora = investigar_detalhes(url_final)
-                    return texto, url_final, local, foto, video, hora
+                    # Filtros de segurança básica
+                    if len(texto) > 20 and "leia mais" not in texto.lower():
+                        if not href.startswith('http'): href = "https://www.pcdf.df.gov.br" + href
+                        local, foto, video, hora = investigar_detalhes(href)
+                        return texto, href, local, foto, video, hora
+
+            # --- TENTATIVA 2: Busca por Classes comuns ---
+            # Se não achou por tag, procura por classes que contenham 'title'
+            divs_titulo = soup.find_all(class_=re.compile(r'(title|manchete|heading)'))
+            for div in divs_titulo:
+                link = div.find('a') if div.name != 'a' else div
+                if link:
+                    texto = link.get_text().strip()
+                    href = link['href']
+                    if len(texto) > 20:
+                        if not href.startswith('http'): href = "https://www.pcdf.df.gov.br" + href
+                        local, foto, video, hora = investigar_detalhes(href)
+                        return texto, href, local, foto, video, hora
+
+            # --- TENTATIVA 3: Força Bruta (Último Recurso) ---
+            # Pega qualquer link longo que não seja PDF
+            todos_links = soup.find_all('a', href=True)
+            for link in todos_links:
+                texto = link.get_text().strip()
+                href = link['href']
+                
+                # Critérios: Texto longo, não é menu, não é PDF
+                if len(texto) > 35 and ".pdf" not in href and "javascript" not in href:
+                     if not href.startswith('http'): href = "https://www.pcdf.df.gov.br" + href
+                     local, foto, video, hora = investigar_detalhes(href)
+                     return texto, href, local, foto, video, hora
+                     
     except Exception as e:
-        # print(f"Erro PCDF: {e}") # Debug
+        # Se quiser debugar, descomente a linha abaixo para ver o erro no log do Streamlit
+        # print(f"Erro PCDF: {e}")
         pass
+        
     return None, None, None, None, None, None
 
 def pcgo_corrigida():
@@ -277,3 +317,4 @@ with tab3:
     c1, c2 = st.columns([1, 2])
     with c1: render_card("mt", "METRÓPOLES", "linear-gradient(135deg, #00B4DB, #0083B0)", "📱", f_metro)
     with c2: st.info(f"Monitoramento de concorrência ativo.")
+
