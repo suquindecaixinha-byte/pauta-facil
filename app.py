@@ -4,9 +4,9 @@ from bs4 import BeautifulSoup
 import urllib3
 import re
 from datetime import datetime
-import pytz # Biblioteca para fuso horário
+import pytz
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
+# --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(
     page_title="Pauta Fácil",
     layout="wide",
@@ -14,56 +14,62 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CONFIGURAÇÃO DE ESTADO (MEMÓRIA) ---
-# Isso permite saber se a notícia é nova ou se já estava lá
-if 'historico' not in st.session_state:
-    st.session_state.historico = {}
+# --- SISTEMA DE MEMÓRIA (CACHE) ---
+# Se o site cair, mostramos a última notícia salva aqui
+if 'db_noticias' not in st.session_state:
+    st.session_state.db_noticias = {}
 
 # Desabilitar avisos SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36'}
 
-# --- FUSO HORÁRIO DE BRASÍLIA ---
-def hora_brasilia():
+# --- FUNÇÕES DE TEMPO ---
+def hora_atual():
     fuso = pytz.timezone('America/Sao_Paulo')
-    return datetime.now(fuso).strftime('%H:%M:%S')
+    return datetime.now(fuso).strftime('%H:%M')
 
-# --- ESTILOS CSS (VISUAL TV) ---
+def extrair_horario_texto(soup):
+    """ Tenta encontrar horas (HH:MM ou HHhMM) dentro da matéria """
+    texto = soup.get_text()
+    # Procura padrões como 14:30 ou 14h30
+    match = re.search(r'(\d{2}[:h]\d{2})', texto)
+    if match:
+        return match.group(1).replace('h', ':')
+    return None
+
+# --- ESTILOS CSS (FONTE NOVA + DESIGN) ---
 st.markdown("""
     <style>
-    .main { background-color: #f4f6f9; }
-    h1, h2, h3 { font-family: 'Roboto', sans-serif; }
+    /* Importando Fontes do Google */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Oswald:wght@500&display=swap');
+
+    .main { background-color: #f0f2f5; }
     
-    /* Assinatura do Criador */
-    .criador {
-        font-size: 12px;
-        color: #666;
-        margin-top: -15px;
-        margin-bottom: 20px;
-        font-style: italic;
-    }
+    /* Fontes Globais */
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    h1, h2, h3 { font-family: 'Inter', sans-serif; font-weight: 800; letter-spacing: -0.5px; }
+
+    /* Assinatura */
+    .criador { font-size: 11px; color: #888; margin-top: -15px; margin-bottom: 20px; border-bottom: 1px solid #ddd; padding-bottom: 10px;}
 
     /* Card de Notícia */
     .news-card {
         background-color: white;
-        border-radius: 10px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
         margin-bottom: 20px;
-        border: 1px solid #e1e4e8;
+        border: 1px solid #ffffff;
         overflow: hidden;
-        transition: all 0.3s ease;
+        transition: transform 0.2s;
     }
-    .news-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-    }
+    .news-card:hover { transform: translateY(-2px); border-color: #b0bec5; }
     
     /* Cabeçalho do Card */
     .card-header {
-        padding: 8px 15px;
-        font-size: 11px;
-        font-weight: 800;
-        letter-spacing: 0.5px;
+        padding: 10px 18px;
+        font-family: 'Oswald', sans-serif; /* Fonte condensada para títulos */
+        font-size: 14px;
+        letter-spacing: 1px;
         text-transform: uppercase;
         color: white;
         display: flex;
@@ -71,50 +77,58 @@ st.markdown("""
         align-items: center;
     }
     
-    /* Status da Notícia (Nova vs Antiga) */
-    .status-badge {
-        background: rgba(0,0,0,0.3);
-        padding: 2px 8px;
-        border-radius: 10px;
-        font-size: 10px;
+    /* Badge de Tempo */
+    .time-badge {
+        background: rgba(0,0,0,0.4);
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-family: 'Inter', sans-serif;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 4px;
     }
     
-    .card-body { padding: 15px; }
+    .card-body { padding: 18px; }
+    
     .news-title {
-        font-size: 15px;
+        font-size: 16px;
         font-weight: 700;
-        color: #1a1a1a;
-        line-height: 1.4;
-        margin-bottom: 12px;
-        min-height: 42px;
+        color: #111;
+        line-height: 1.5;
+        margin-bottom: 15px;
+        min-height: 50px;
     }
     
     /* Tags */
-    .tags-container { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
-    .tag { font-size: 9px; padding: 2px 6px; border-radius: 4px; font-weight: 700; text-transform: uppercase; }
-    .tag-local { background: #e3f2fd; color: #1565c0; }
-    .tag-video { background: #fce4ec; color: #c2185b; }
-    .tag-foto { background: #f3e5f5; color: #7b1fa2; }
+    .tags-container { margin-bottom: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .tag { font-size: 10px; padding: 4px 8px; border-radius: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+    
+    .tag-local { background: #e8f0fe; color: #1967d2; border: 1px solid #d2e3fc; }
+    .tag-video { background: #fce8e6; color: #c5221f; border: 1px solid #fad2cf; }
+    .tag-foto { background: #f3e8fd; color: #8430ce; border: 1px solid #e8d2fa; }
     
     /* Botão */
     .card-footer {
-        padding: 8px 15px;
+        padding: 12px 18px;
         background-color: #f8f9fa;
-        border-top: 1px solid #eee;
+        border-top: 1px solid #f1f3f4;
         text-align: right;
     }
     .read-btn {
         text-decoration: none;
         color: #333;
         font-size: 11px;
-        font-weight: 700;
+        font-weight: 800;
+        letter-spacing: 0.5px;
     }
-    .read-btn:hover { color: #007bff; }
+    .read-btn:hover { color: #1a73e8; }
     
     </style>
 """, unsafe_allow_html=True)
 
-# --- INTELIGÊNCIA DE LOCAL ---
+# --- INTEGRAÇÃO COM LOCAIS ---
 LOCAIS_ALVO = [
     "Ceilândia", "Taguatinga", "Samambaia", "Gama", "Santa Maria", "Planaltina", "Recanto das Emas",
     "São Sebastião", "Brazlândia", "Sol Nascente", "Pôr do Sol", "Paranoá", "Núcleo Bandeirante",
@@ -128,19 +142,30 @@ def investigar_detalhes(url):
     local_encontrado = None
     tem_foto = False
     tem_video = False
+    hora_publicacao = None
+    
     try:
         r = requests.get(url, headers=HEADERS, timeout=8, verify=False)
         if r.status_code == 200:
             soup = BeautifulSoup(r.content, 'html.parser')
             texto = soup.get_text()
+            
+            # 1. Local
             for local in LOCAIS_ALVO:
                 if re.search(r'\b' + re.escape(local) + r'\b', texto, re.IGNORECASE):
                     local_encontrado = local
                     break
+            
+            # 2. Mídia
             if soup.find('iframe') or soup.find('video') or "youtube.com" in str(soup): tem_video = True
             if len(soup.find_all('img')) > 2: tem_foto = True
+
+            # 3. Horário (Tenta achar no texto)
+            hora_publicacao = extrair_horario_texto(soup)
+            
     except: pass
-    return local_encontrado, tem_foto, tem_video
+    
+    return local_encontrado, tem_foto, tem_video, hora_publicacao
 
 # --- SCRAPER MESTRE ---
 def buscar_generico(url, seletor_tag, seletor_classe=None, regex_link=None):
@@ -161,10 +186,11 @@ def buscar_generico(url, seletor_tag, seletor_classe=None, regex_link=None):
                         url_final = base + url_final
                     
                     if len(titulo) > 10:
-                        local, foto, video = investigar_detalhes(url_final)
-                        return titulo, url_final, local, foto, video
+                        # Entra na página para pegar detalhes e hora
+                        local, foto, video, hora = investigar_detalhes(url_final)
+                        return titulo, url_final, local, foto, video, hora
     except: pass
-    return None, None, None, None, None
+    return None, None, None, None, None, None
 
 def pmdf_v2():
     try:
@@ -180,71 +206,65 @@ def pmdf_v2():
                     url_final = link['href']
                     if len(texto) < 15 or "leia mais" in texto.lower(): continue
                     if not url_final.startswith('http'): url_final = "https://portal.pm.df.gov.br" + url_final
-                    local, foto, video = investigar_detalhes(url_final)
-                    return texto, url_final, local, foto, video
+                    
+                    local, foto, video, hora = investigar_detalhes(url_final)
+                    return texto, url_final, local, foto, video, hora
     except: pass
-    return None, None, None, None, None
-
-# --- DEFINIÇÕES DE FONTES ---
-def pcdf(): return buscar_generico("https://www.pcdf.df.gov.br/noticias", "a", regex_link=r'/noticias/\d+')
-def pcgo(): return buscar_generico("https://policiacivil.go.gov.br/noticias", "h2", "entry-title")
-def metropoles(): return buscar_generico("https://www.metropoles.com/distrito-federal", "h3")
-def agencia(): return buscar_generico("https://www.agenciabrasilia.df.gov.br/", "h3")
-def mpdft(): return buscar_generico("https://www.mpdft.mp.br/portal/index.php/comunicacao-menu/noticias", "h2")
-def tjdft(): return buscar_generico("https://www.tjdft.jus.br/institucional/imprensa/noticias", "article", "entry")
-def cldf(): return buscar_generico("https://www.cl.df.gov.br/web/guest/noticias", "h3")
+    return None, None, None, None, None, None
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("📝 Pauta Fácil")
     st.markdown("<div class='criador'>Criado por Deivlin Vale</div>", unsafe_allow_html=True)
     
-    if st.button("🔄 ATUALIZAR AGORA", type="primary", use_container_width=True):
+    if st.button("🔄 ATUALIZAR SISTEMA", type="primary", use_container_width=True):
+        st.cache_data.clear() # Limpa caches internos
         st.rerun()
         
     st.write("---")
-    st.info(f"🕒 Horário de Brasília:\n**{hora_brasilia()}**")
-    st.write("---")
-    st.caption("Fontes Monitoradas: 8")
+    st.caption(f"Brasília, {datetime.now().strftime('%d/%m/%Y')}")
+    st.markdown(f"**{hora_atual()}**")
 
-# --- LAYOUT PRINCIPAL ---
-
-# Título Principal (Opcional, já está na sidebar, mas bom para mobile)
-# st.title("Pauta Fácil") 
-
-# Função de Renderização Inteligente
-def render_card(id_fonte, nome_fonte, cor_fundo, icone, dados):
-    titulo, link, local, foto, video = dados
+# --- LÓGICA DE RENDERIZAÇÃO INTELIGENTE ---
+def render_card(chave_id, nome_fonte, cor_fundo, icone, func_busca):
     
-    # Lógica de Estado (Novo vs Velho)
-    status_label = "📌 ÚLTIMA"
-    cor_status = "rgba(255,255,255,0.2)" # Transparente
+    # 1. Tenta buscar dados novos
+    dados = func_busca()
+    titulo, link, local, foto, video, hora = dados
+    
+    # 2. Gerenciamento de Memória
+    status_msg = ""
     
     if titulo:
-        ultimo_titulo = st.session_state.historico.get(id_fonte)
-        
-        if ultimo_titulo:
-            if ultimo_titulo == titulo:
-                status_label = "⏳ ANTIGA"
-                cor_status = "rgba(0,0,0,0.4)" # Cinza escuro
-            else:
-                status_label = "🔥 NOVA!"
-                cor_status = "#00c853" # Verde vibrante
-        
-        # Atualiza histórico
-        st.session_state.historico[id_fonte] = titulo
+        # Sucesso: Atualiza memória
+        st.session_state.db_noticias[chave_id] = {
+            "titulo": titulo, "link": link, "local": local, 
+            "foto": foto, "video": video, "hora": hora,
+            "timestamp": hora_atual()
+        }
+        status_msg = "⏱ " + (hora if hora else "Recente")
     else:
-        status_label = "OFFLINE"
+        # Falha: Tenta recuperar da memória
+        memoria = st.session_state.db_noticias.get(chave_id)
+        if memoria:
+            titulo = memoria["titulo"]
+            link = memoria["link"]
+            local = memoria["local"]
+            foto = memoria["foto"]
+            video = memoria["video"]
+            hora = memoria["hora"]
+            status_msg = "⚠️ CACHED" # Avisa que é dado antigo
+        else:
+            # Sem dados novos e sem memória
+            st.markdown(f"""
+            <div class="news-card" style="opacity: 0.5;">
+                <div class="card-header" style="background-color: #999;">{nome_fonte}</div>
+                <div class="card-body"><div class="news-title" style="color:#777; font-size:13px;">Aguardando atualização...</div></div>
+            </div>
+            """, unsafe_allow_html=True)
+            return
 
-    if not titulo:
-        st.markdown(f"""
-        <div class="news-card" style="opacity: 0.6;">
-            <div class="card-header" style="background-color: #999;">{nome_fonte}</div>
-            <div class="card-body"><div class="news-title" style="color:#777; font-size:13px;">Sem dados recentes.</div></div>
-        </div>
-        """, unsafe_allow_html=True)
-        return
-
+    # 3. Montagem do Card
     tags_html = '<div class="tags-container">'
     if local: tags_html += f'<span class="tag tag-local">📍 {local}</span>'
     if video: tags_html += '<span class="tag tag-video">🎥 VÍDEO</span>'
@@ -255,37 +275,45 @@ def render_card(id_fonte, nome_fonte, cor_fundo, icone, dados):
     <div class="news-card">
         <div class="card-header" style="background: {cor_fundo};">
             <span>{icone} {nome_fonte}</span>
-            <span class="status-badge" style="background:{cor_status}">{status_label}</span>
+            <div class="time-badge">{status_msg}</div>
         </div>
         <div class="card-body">
             {tags_html}
             <div class="news-title">{titulo}</div>
         </div>
         <div class="card-footer">
-            <a href="{link}" target="_blank" class="read-btn">ACESSAR PAUTA ➜</a>
+            <a href="{link}" target="_blank" class="read-btn">LER MATÉRIA ➜</a>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-# --- ABAS ---
-tab_policia, tab_poder, tab_concorrencia = st.tabs(["🚨 POLICIAL", "🏛️ PODER", "📰 PORTAIS"])
+# --- ABAS E EXECUÇÃO ---
+tab1, tab2, tab3 = st.tabs(["🚨 POLICIAL", "🏛️ PODER", "📰 PORTAIS"])
 
-with tab_policia:
+# Definições das funções de busca (Lambdas para passar como argumento)
+f_pcdf = lambda: buscar_generico("https://www.pcdf.df.gov.br/noticias", "a", regex_link=r'/noticias/\d+')
+f_pcgo = lambda: buscar_generico("https://policiacivil.go.gov.br/noticias", "h2", "entry-title")
+f_pmdf = pmdf_v2
+f_ag = lambda: buscar_generico("https://www.agenciabrasilia.df.gov.br/", "h3")
+f_mp = lambda: buscar_generico("https://www.mpdft.mp.br/portal/index.php/comunicacao-menu/noticias", "h2")
+f_tj = lambda: buscar_generico("https://www.tjdft.jus.br/institucional/imprensa/noticias", "article", "entry")
+f_cl = lambda: buscar_generico("https://www.cl.df.gov.br/web/guest/noticias", "h3")
+f_metro = lambda: buscar_generico("https://www.metropoles.com/distrito-federal", "h3")
+
+with tab1:
     c1, c2, c3 = st.columns(3)
-    with c1: render_card("pcdf", "PCDF", "linear-gradient(45deg, #2c3e50, #000000)", "🕵️‍♂️", pcdf())
-    with c2: render_card("pmdf", "PMDF", "linear-gradient(45deg, #c0392b, #8e44ad)", "🚓", pmdf_v2())
-    with c3: render_card("pcgo", "PCGO ENTORNO", "linear-gradient(45deg, #2980b9, #2c3e50)", "🔫", pcgo())
+    with c1: render_card("pcdf", "PCDF", "linear-gradient(135deg, #232526, #414345)", "🕵️‍♂️", f_pcdf)
+    with c2: render_card("pmdf", "PMDF", "linear-gradient(135deg, #cb2d3e, #ef473a)", "🚓", f_pmdf)
+    with c3: render_card("pcgo", "PCGO", "linear-gradient(135deg, #1A2980, #26D0CE)", "🔫", f_pcgo)
 
-with tab_poder:
+with tab2:
     c1, c2, c3, c4 = st.columns(4)
-    with c1: render_card("ag", "AGÊNCIA BSB", "#009688", "📢", agencia())
-    with c2: render_card("mp", "MPDFT", "#c0392b", "⚖️", mpdft())
-    with c3: render_card("tj", "TJDFT", "#7f8c8d", "🔨", tjdft())
-    with c4: render_card("cl", "CÂMARA (CLDF)", "#8e44ad", "🏛️", cldf())
+    with c1: render_card("ag", "GDF", "#009688", "📢", f_ag)
+    with c2: render_card("mp", "MPDFT", "#b71c1c", "⚖️", f_mp)
+    with c3: render_card("tj", "TJDFT", "#607d8b", "🔨", f_tj)
+    with c4: render_card("cl", "CLDF", "#673ab7", "🏛️", f_cl)
 
-with tab_concorrencia:
-    col_main, col_spacer = st.columns([1, 2])
-    with col_main:
-        render_card("metro", "METRÓPOLES DF", "linear-gradient(45deg, #039be5, #00acc1)", "📱", metropoles())
-    with col_spacer:
-        st.info(f"Última verificação às {hora_brasilia()}")
+with tab3:
+    c1, c2 = st.columns([1, 2])
+    with c1: render_card("mt", "METRÓPOLES", "linear-gradient(135deg, #00B4DB, #0083B0)", "📱", f_metro)
+    with c2: st.info("Monitoramento de concorrência ativo.")
